@@ -1,0 +1,40 @@
+# Core Framework
+langchain==0.1.20
+langchain-community==0.0.38
+langgraph==0.0.40
+
+# LLM & Embeddings
+ollama==0.1.6
+sentence-transformers==2.3.1
+
+# Vector Database
+chromadb==0.4.22
+
+# Database & ORM
+sqlalchemy==2.0.25
+alembic==1.13.1
+
+# File Monitoring
+watchdog==3.0.0
+
+# Web Framework (Phase 5, but include now)
+fastapi==0.109.0
+uvicorn[standard]==0.27.0
+pydantic==2.5.3
+
+# Utilities
+python-dotenv==1.0.0
+pyyaml==6.0.1
+tqdm==4.66.1
+tenacity==8.2.3
+python-dateutil==2.8.2
+
+# Development
+pytest==7.4.4
+pytest-asyncio==0.23.3
+black==23.12.1
+ruff==0.1.11
+mypy==1.8.0
+
+# Logging
+loguru==0.7.2
