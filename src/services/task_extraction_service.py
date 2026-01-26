@@ -13,7 +13,22 @@ For each task, determine if it's CLEAR or AMBIGUOUS.
 - CLEAR: Has enough context to act on later
 - AMBIGUOUS: Vague, missing context, future-you won't know what this means
 
-For ambiguous tasks, generate a clarifying question.
+For AMBIGUOUS tasks, write ONE clarifying question that makes the task executable later.
+Rules for the clarifying question:
+- Ask for the missing piece(s): WHO / WHAT / WHERE / WHEN / DEFINITION OF TERM / OUTPUT FORMAT
+- Be specific and short (max 20 words).
+- If the task could mean multiple things, offer 2–3 options and ask the user to choose.
+- If "where" matters, ask for the file/path/system/section explicitly.
+- If "done" criteria matters, ask what the expected output looks like.
+
+Examples:
+- "merge the output files" →
+  "Which files should be merged (names/paths), and what should the merged output be called?"
+- "KEYs for rag" →
+  "Do you mean (A) define required/optional RAG keys, (B) validate existing keys, or (C) implement key extraction?"
+- "Break down by property" →
+  "Break down which metric (accuracy, volume, deflection rate), and for which property codes?"
+
 
 Note content:
 ---
@@ -121,20 +136,35 @@ class TaskExtractionService:
             
             # Suggest project assignments
             from src.services.project_service import project_service
+
             for task in tasks:
-                if task.domain:
-                    proj_id, proj_name, confidence = project_service.suggest_project(
+                if not task.domain:
+                    continue
+
+                try:
+                    # suggest_project returns: (project_id, project_name, confidence, new_project_suggestion)
+                    proj_id, proj_name, confidence, new_project = project_service.suggest_project(
                         f"{task.action}: {task.text}", task.domain
                     )
+
                     task.metadata["suggested_project_id"] = proj_id
                     task.metadata["suggested_project_name"] = proj_name
                     task.metadata["project_confidence"] = confidence
-                    
-                    # If new project suggested with high confidence
-                    if not proj_id and proj_name and confidence > 0.7:
-                        task.metadata["new_project_suggested"] = proj_name
-            
+                    task.metadata["project_assign_method"] = "llm_routing"
+                    task.metadata["project_assign_confidence"] = float(confidence or 0.0)
+                    task.metadata["project_assign_needs_review"] = 1 if (0.80 <= (confidence or 0.0) < 0.92) else 0
+
+
+                    if new_project:
+                        task.metadata["new_project_suggested"] = new_project
+
+                except Exception as e:
+                    logger.error(f"Project suggestion failed for task '{task.action}': {e}")
+                    continue
+
+            # IMPORTANT: always return a tuple
             return tasks, questions
+
             
         except Exception as e:
             logger.error(f"Task extraction failed: {e}")

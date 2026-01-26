@@ -33,6 +33,22 @@ class ProjectService:
             )
         """)
         
+        def _ensure_task_assignment_columns():
+            conn = sqlite3.connect(settings.sqlite_db_path)
+            cur = conn.cursor()
+            cur.execute("PRAGMA table_info(tasks)")
+            cols = {r[1] for r in cur.fetchall()}
+
+            if "project_assign_method" not in cols:
+                cur.execute("ALTER TABLE tasks ADD COLUMN project_assign_method TEXT")
+            if "project_assign_confidence" not in cols:
+                cur.execute("ALTER TABLE tasks ADD COLUMN project_assign_confidence REAL")
+            if "project_assign_needs_review" not in cols:
+                cur.execute("ALTER TABLE tasks ADD COLUMN project_assign_needs_review INTEGER DEFAULT 0")
+
+            conn.commit()
+            conn.close()
+
         # Track project assignment confidence
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS project_confidence (

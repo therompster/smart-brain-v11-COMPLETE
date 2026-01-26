@@ -16,6 +16,32 @@ from src.models.workflow_state import ClusterNote, NoteType
 
 app = FastAPI(title="Smart Second Brain API")
 
+@app.on_event("startup")
+
+def ensure_task_assignment_columns():
+    import sqlite3
+    from src.config import settings
+
+    conn = sqlite3.connect(settings.sqlite_db_path)
+    cur = conn.cursor()
+
+    # If tasks table doesn't exist yet, nothing to alter here (your DB init will create it)
+    try:
+        cur.execute("PRAGMA table_info(tasks)")
+        cols = {r[1] for r in cur.fetchall()}
+        stmts = [
+            ("project_assign_method", "ALTER TABLE tasks ADD COLUMN project_assign_method TEXT"),
+            ("project_assign_confidence", "ALTER TABLE tasks ADD COLUMN project_assign_confidence REAL"),
+            ("project_assign_needs_review", "ALTER TABLE tasks ADD COLUMN project_assign_needs_review INTEGER DEFAULT 0"),
+        ]
+        for col, stmt in stmts:
+            if col not in cols:
+                cur.execute(stmt)
+        conn.commit()
+    finally:
+        conn.close()
+
+
 # CORS for Svelte frontend
 app.add_middleware(
     CORSMiddleware,
@@ -63,6 +89,32 @@ class NoteSave(BaseModel):
 @app.get("/")
 async def root():
     return {"status": "ok", "app": "Smart Second Brain"}
+
+
+
+
+@app.get("/api/tasks/review")
+async def tasks_needing_review(domain: str):
+    conn = sqlite3.connect(settings.sqlite_db_path)
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+
+    cursor.execute("""
+      SELECT id, text, action, status, priority, estimated_duration_minutes,
+             domain, source_note_id, created_at,
+             project_id, project_assign_method, project_assign_confidence, project_assign_needs_review
+      FROM tasks
+      WHERE domain = ?
+        AND project_assign_needs_review = 1
+        AND status IN ('open','pending_clarification')
+      ORDER BY COALESCE(project_assign_confidence, 0) DESC, created_at DESC
+      LIMIT 200
+    """, (domain,))
+
+    rows = [dict(r) for r in cursor.fetchall()]
+    conn.close()
+    return rows
+
 
 
 @app.post("/api/notes/process", response_model=NoteProcessed)
@@ -162,8 +214,20 @@ async def create_note(note: NoteSave):
         note_id = row[0]
         conn.close()
         
-        # Extract tasks - now returns (tasks, questions)
-        tasks, questions = task_extraction_service.extract_tasks(note.content, note_id, note.domain)
+        # === DEDUPE GUARD: prevent duplicate task creation for same note ===
+        conn = sqlite3.connect(settings.sqlite_db_path)
+        cursor = conn.cursor()
+        cursor.execute("SELECT COUNT(*) FROM tasks WHERE source_note_id = ?", (note_id,))
+        existing_task_count = cursor.fetchone()[0] or 0
+        conn.close()
+
+        if existing_task_count > 0:
+            logger.info(f"Note {note_id} already has {existing_task_count} tasks; skipping extraction/inserts")
+            tasks, questions = [], []
+        else:
+            # Extract tasks - now returns (tasks, questions)
+            tasks, questions = task_extraction_service.extract_tasks(note.content, note_id, note.domain)
+
         
         # Store tasks temporarily (with pending status if they need clarification)
         conn = sqlite3.connect(settings.sqlite_db_path)
@@ -175,8 +239,12 @@ async def create_note(note: NoteSave):
             project_id = task.metadata.get("suggested_project_id")
             
             cursor.execute("""
-                INSERT INTO tasks (text, action, status, priority, estimated_duration_minutes, domain, source_note_id, project_id)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO tasks (
+                    text, action, status, priority, estimated_duration_minutes,
+                    domain, source_note_id, project_id,
+                    project_assign_method, project_assign_confidence, project_assign_needs_review
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 task.text,
                 task.action,
@@ -185,8 +253,12 @@ async def create_note(note: NoteSave):
                 task.estimated_duration_minutes,
                 task.domain,
                 task.source_note_id,
-                project_id
+                project_id,
+                task.metadata.get("project_assign_method"),
+                task.metadata.get("project_assign_confidence"),
+                task.metadata.get("project_assign_needs_review", 0),
             ))
+
             
             # Learn keywords if assigned to project
             if project_id:
@@ -735,6 +807,10 @@ class ProjectResponse(BaseModel):
     keywords: List[str]
     task_count: int
 
+#@app.get("/api/projects/validate")
+#async def validate_project_assignments(domain: str):
+#    from src.services.project_service import project_service
+#    return {"domain": domain, "suggestions": project_service.validate_assignments(domain)}
 
 @app.get("/api/projects", response_model=List[ProjectResponse])
 async def list_projects(domain: Optional[str] = None):
@@ -817,7 +893,7 @@ async def assign_task_to_project(task_id: int, data: Dict[str, int]):
     return {"status": "ok"}
 
 
-@app.get("/api/projects/validate/{domain}")
+@app.get("/api/projects/validate/{domain:path}")
 async def validate_project_assignments(domain: str):
     """Check for misassigned tasks in a domain."""
     from src.services.project_service import project_service
@@ -825,7 +901,7 @@ async def validate_project_assignments(domain: str):
     return {"suggestions": suggestions}
 
 
-@app.get("/api/hierarchy/{domain}")
+@app.get("/api/hierarchy/{domain:path}")
 async def get_domain_hierarchy(domain: str):
     """Get full hierarchy: domain -> projects -> tasks."""
     from src.services.project_service import project_service
