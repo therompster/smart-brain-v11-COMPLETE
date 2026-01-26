@@ -44,6 +44,8 @@ class AdaptiveOnboardingService:
         if not previous_answers:
             previous_answers = {}
         
+        logger.debug(f"Getting next question. Previous answers: {list(previous_answers.keys())}")
+        
         # Question flow adapts based on answers
         if 'role' not in previous_answers:
             return {
@@ -106,7 +108,7 @@ class AdaptiveOnboardingService:
         # Adaptive: only ask balance if multiple work areas
         has_multiple = bool(previous_answers.get('company')) and bool(previous_answers.get('side_projects'))
         
-        # FIX: Check for work_balance_0 since UI binds to work_balance_0, work_balance_1, work_balance_2
+        # Check for work_balance_0 since UI binds to work_balance_0, work_balance_1, work_balance_2
         if has_multiple and 'work_balance_0' not in previous_answers:
             domains = []
             if previous_answers.get('company'):
@@ -123,10 +125,13 @@ class AdaptiveOnboardingService:
             }
         
         # Done
+        logger.info("Onboarding questions complete")
         return None
     
     def save_answers(self, answers: Dict):
         """Save onboarding answers and setup system."""
+        logger.info(f"Saving onboarding answers: {list(answers.keys())}")
+        
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         
@@ -135,7 +140,8 @@ class AdaptiveOnboardingService:
             cursor.execute("""
                 INSERT OR REPLACE INTO profile_data (key, value, updated_at)
                 VALUES (?, ?, CURRENT_TIMESTAMP)
-            """, (key, str(value)))
+            """, (key, str(value) if value is not None else ''))
+            logger.debug(f"Saved profile data: {key} = {value}")
         
         # Mark complete
         cursor.execute("""
@@ -146,17 +152,32 @@ class AdaptiveOnboardingService:
         conn.commit()
         conn.close()
         
-        # Setup domains
-        from src.services.domain_service import domain_service
-        domain_service.setup_from_profile(answers)
+        # Setup domains from profile
+        try:
+            from src.services.domain_service import domain_service
+            logger.info("Setting up domains from profile...")
+            domain_service.setup_from_profile(answers)
+        except Exception as e:
+            logger.error(f"Failed to setup domains: {e}")
+            # Try to create defaults anyway
+            try:
+                domain_service.ensure_default_domains()
+            except Exception as e2:
+                logger.error(f"Failed to create default domains: {e2}")
         
         # Initialize learned thresholds
-        from src.services.threshold_service import threshold_service
-        threshold_service.initialize()
+        try:
+            from src.services.threshold_service import threshold_service
+            threshold_service.initialize()
+        except Exception as e:
+            logger.error(f"Failed to initialize thresholds: {e}")
         
         # Initialize priority learning
-        from src.services.priority_learning_service import priority_learning
-        priority_learning._ensure_table()
+        try:
+            from src.services.priority_learning_service import priority_learning
+            priority_learning._ensure_table()
+        except Exception as e:
+            logger.error(f"Failed to initialize priority learning: {e}")
         
         logger.success("Adaptive onboarding completed")
     

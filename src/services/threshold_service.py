@@ -70,13 +70,7 @@ class ThresholdService:
         return DEFAULT_THRESHOLDS.get(name, 0.5)
     
     def adjust(self, name: str, feedback: str):
-        """
-        Adjust threshold based on user feedback.
-        
-        Args:
-            name: Threshold name
-            feedback: 'too_sensitive' or 'not_sensitive'
-        """
+        """Adjust threshold based on user feedback."""
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         
@@ -84,25 +78,22 @@ class ThresholdService:
         row = cursor.fetchone()
         current = row[0] if row else DEFAULT_THRESHOLDS.get(name, 0.5)
         
-        # Adjust based on feedback
         if feedback == 'too_sensitive':
-            # User wants fewer interruptions
             if 'confidence' in name:
-                new_value = max(0.1, current - 0.05)  # Lower bar
+                new_value = max(0.1, current - 0.05)
             elif 'days' in name:
-                new_value = current + 2  # Wait longer
+                new_value = current + 2
             elif 'ratio' in name:
-                new_value = current + 0.5  # Higher tolerance
+                new_value = current + 0.5
             else:
                 new_value = current * 1.1
-        else:  # not_sensitive
-            # User wants more attention
+        else:
             if 'confidence' in name:
-                new_value = min(0.95, current + 0.05)  # Raise bar
+                new_value = min(0.95, current + 0.05)
             elif 'days' in name:
-                new_value = max(1, current - 2)  # Check sooner
+                new_value = max(1, current - 2)
             elif 'ratio' in name:
-                new_value = max(1.2, current - 0.5)  # Lower tolerance
+                new_value = max(1.2, current - 0.5)
             else:
                 new_value = current * 0.9
         
@@ -126,7 +117,6 @@ class ThresholdService:
         thresholds = {row[0]: row[1] for row in cursor.fetchall()}
         conn.close()
         
-        # Fill missing with defaults
         for name, value in DEFAULT_THRESHOLDS.items():
             if name not in thresholds:
                 thresholds[name] = value

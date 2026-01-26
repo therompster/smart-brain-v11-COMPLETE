@@ -46,6 +46,12 @@ class RouteService:
         confidence_threshold = threshold_service.get('routing_confidence_min')
         
         domains = domain_service.get_all_domains()
+        
+        # Fallback if no domains
+        if not domains:
+            domain_service.ensure_default_domains()
+            domains = domain_service.get_all_domains()
+        
         keyword_match = self._keyword_match(cluster, domains)
         
         if keyword_match:

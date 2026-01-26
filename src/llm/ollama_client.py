@@ -17,28 +17,16 @@ class OllamaClient:
         self.fallback_model = settings.ollama_fallback_model
     
     def get_model_for_task(self, task_type: str) -> str:
-        """
-        Get appropriate model for task type.
-        
-        Args:
-            task_type: One of 'task_extraction', 'entity_recognition', 'routing', 'clustering'
-        
-        Returns:
-            Model name
-        """
+        """Get appropriate model for task type."""
         model_map = {
             'task_extraction': settings.ollama_task_extraction_model,
             'entity_recognition': settings.ollama_entity_recognition_model,
             'routing': settings.ollama_routing_model,
             'clustering': settings.ollama_clustering_model
         }
-        
         return model_map.get(task_type, settings.ollama_routing_model)
     
-    @retry(
-        stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=1, min=2, max=10)
-    )
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
     def generate(
         self,
         prompt: str,
@@ -48,21 +36,7 @@ class OllamaClient:
         temperature: float = 0.7,
         format: Optional[str] = None
     ) -> str:
-        """
-        Generate completion from Ollama.
-        
-        Args:
-            prompt: User prompt
-            model: Specific model name (overrides task_type)
-            task_type: Task type for auto model selection
-            system: System prompt
-            temperature: Sampling temperature
-            format: Response format ('json' for structured output)
-        
-        Returns:
-            Generated text
-        """
-        # Determine model
+        """Generate completion from Ollama."""
         if model:
             selected_model = model
         elif task_type:
@@ -81,21 +55,16 @@ class OllamaClient:
             response = self.client.chat(
                 model=selected_model,
                 messages=messages,
-                options={
-                    "temperature": temperature,
-                },
+                options={"temperature": temperature},
                 format=format
             )
             
             result = response['message']['content']
             logger.debug(f"Generated {len(result)} chars")
-            
             return result
             
         except Exception as e:
             logger.warning(f"Model {selected_model} failed: {e}")
-            
-            # Try fallback if not already using it
             if selected_model != self.fallback_model:
                 logger.info(f"Falling back to {self.fallback_model}")
                 return self.generate(
@@ -105,8 +74,7 @@ class OllamaClient:
                     temperature=temperature,
                     format=format
                 )
-            else:
-                raise
+            raise
     
     def generate_json(
         self,
@@ -115,28 +83,12 @@ class OllamaClient:
         task_type: Optional[str] = None,
         system: Optional[str] = None
     ) -> Dict[str, Any]:
-        """
-        Generate JSON response.
-        
-        Args:
-            prompt: User prompt
-            model: Model name
-            task_type: Task type for auto model selection
-            system: System prompt
-        
-        Returns:
-            Parsed JSON dict
-        """
+        """Generate JSON response."""
         response = self.generate(
-            prompt=prompt,
-            model=model,
-            task_type=task_type,
-            system=system,
-            temperature=0.3,
-            format="json"
+            prompt=prompt, model=model, task_type=task_type,
+            system=system, temperature=0.3, format="json"
         )
         
-        # Clean response
         response = response.strip()
         if response.startswith("```json"):
             response = response[7:]
@@ -157,10 +109,8 @@ class OllamaClient:
         try:
             models = self.client.list()
             available = [m['name'] for m in models.get('models', [])]
-            
             logger.info(f"Ollama connected. Available models: {available}")
             
-            # Check required models
             required = [
                 settings.ollama_task_extraction_model,
                 settings.ollama_entity_recognition_model,
@@ -175,7 +125,6 @@ class OllamaClient:
                 return False
             
             return True
-            
         except Exception as e:
             logger.error(f"Ollama connection failed: {e}")
             return False

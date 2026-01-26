@@ -20,7 +20,6 @@ class ConfidenceService:
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         
-        # Domain routing confidence
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS routing_confidence (
                 keywords TEXT PRIMARY KEY,
@@ -32,7 +31,6 @@ class ConfidenceService:
             )
         """)
         
-        # Entity (people, projects) confidence
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS entity_confidence (
                 entity_name TEXT PRIMARY KEY,
@@ -47,12 +45,7 @@ class ConfidenceService:
         conn.close()
     
     def check_domain_confidence(self, keywords: str, suggested_domain: str) -> float:
-        """
-        Check confidence for domain routing.
-        
-        Returns:
-            Confidence score 0.0-1.0
-        """
+        """Check confidence for domain routing."""
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         
@@ -66,7 +59,6 @@ class ConfidenceService:
         conn.close()
         
         if not row:
-            # No history, low confidence
             return 0.5
         
         correct, incorrect, stored_conf = row
@@ -75,13 +67,9 @@ class ConfidenceService:
         if total == 0:
             return 0.5
         
-        # Calculate confidence from success rate
-        confidence = correct / total
-        
-        return confidence
+        return correct / total
     
-    def record_routing_feedback(self, keywords: str, suggested_domain: str, 
-                               actual_domain: str):
+    def record_routing_feedback(self, keywords: str, suggested_domain: str, actual_domain: str):
         """Record user's routing decision."""
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
@@ -94,11 +82,10 @@ class ConfidenceService:
             ON CONFLICT(keywords) DO UPDATE SET
                 correct_count = correct_count + ?,
                 incorrect_count = incorrect_count + ?,
-                confidence = (correct_count + ?) / (correct_count + incorrect_count + ? + ?),
+                confidence = (correct_count + ?) * 1.0 / (correct_count + incorrect_count + ? + ?),
                 updated_at = CURRENT_TIMESTAMP
         """, (
-            keywords,
-            actual_domain,
+            keywords, actual_domain,
             1 if is_correct else 0,
             0 if is_correct else 1,
             0.5,
@@ -115,12 +102,7 @@ class ConfidenceService:
         logger.info(f"Routing feedback: {keywords} → {actual_domain} (correct: {is_correct})")
     
     def check_entity(self, name: str) -> Tuple[bool, Optional[Dict]]:
-        """
-        Check if entity (person, project) is known.
-        
-        Returns:
-            (is_known, metadata_dict)
-        """
+        """Check if entity (person, project) is known."""
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         

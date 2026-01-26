@@ -2,43 +2,8 @@
 @tailwind components;
 @tailwind utilities;
 
-/* Prose styling for markdown preview */
-.prose {
-  max-width: 65ch;
-}
-
-.prose h1 {
-  @apply text-3xl font-bold text-white mt-8 mb-4;
-}
-
-.prose h2 {
-  @apply text-2xl font-bold text-white mt-6 mb-3;
-}
-
-.prose h3 {
-  @apply text-xl font-semibold text-white mt-4 mb-2;
-}
-
-.prose p {
-  @apply text-slate-300 mb-4 leading-relaxed;
-}
-
-.prose ul, .prose ol {
-  @apply text-slate-300 mb-4 ml-6;
-}
-
-.prose li {
-  @apply mb-1;
-}
-
-.prose code {
-  @apply bg-slate-800 text-blue-400 px-1.5 py-0.5 rounded text-sm;
-}
-
-.prose pre {
-  @apply bg-slate-900 text-slate-300 p-4 rounded-lg overflow-x-auto mb-4;
-}
-
-.prose a {
-  @apply text-blue-400 hover:text-blue-300 underline;
-}
+.prose h1 { @apply text-3xl font-bold text-white mt-8 mb-4; }
+.prose h2 { @apply text-2xl font-bold text-white mt-6 mb-3; }
+.prose p { @apply text-slate-300 mb-4 leading-relaxed; }
+.prose code { @apply bg-slate-800 text-blue-400 px-1.5 py-0.5 rounded text-sm; }
+.prose a { @apply text-blue-400 hover:text-blue-300 underline; }

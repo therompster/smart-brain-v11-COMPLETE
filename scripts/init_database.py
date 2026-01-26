@@ -8,19 +8,14 @@ from loguru import logger
 
 def init_database(db_path: str = "data/smart_brain.db"):
     """Create database and tables."""
-    
-    # Ensure data directory exists
     Path(db_path).parent.mkdir(parents=True, exist_ok=True)
     
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
-    
-    # Enable WAL mode for better concurrency
     cursor.execute("PRAGMA journal_mode=WAL")
     
     logger.info(f"Initializing database at {db_path}")
     
-    # Notes table
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS notes (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -37,10 +32,7 @@ def init_database(db_path: str = "data/smart_brain.db"):
     """)
     
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_notes_domain ON notes(domain)")
-    cursor.execute("CREATE INDEX IF NOT EXISTS idx_notes_type ON notes(type)")
-    cursor.execute("CREATE INDEX IF NOT EXISTS idx_notes_updated ON notes(updated_at)")
     
-    # Tasks table
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS tasks (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -49,93 +41,14 @@ def init_database(db_path: str = "data/smart_brain.db"):
         status TEXT DEFAULT 'open',
         priority TEXT DEFAULT 'medium',
         estimated_duration_minutes INTEGER,
-        actual_duration_minutes INTEGER,
-        energy_required TEXT,
-        energy_type TEXT,
-        focus_required TEXT,
-        due_date DATE,
         domain TEXT,
         source_note_id INTEGER,
-        parent_task_id INTEGER,
-        project_id INTEGER,
         completed_at TIMESTAMP,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        metadata JSON,
-        FOREIGN KEY (source_note_id) REFERENCES notes(id),
-        FOREIGN KEY (parent_task_id) REFERENCES tasks(id)
-    )
-    """)
-    
-    cursor.execute("CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status)")
-    cursor.execute("CREATE INDEX IF NOT EXISTS idx_tasks_due_date ON tasks(due_date)")
-    cursor.execute("CREATE INDEX IF NOT EXISTS idx_tasks_domain ON tasks(domain)")
-    
-    # Decisions table
-    cursor.execute("""
-    CREATE TABLE IF NOT EXISTS decisions (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        title TEXT NOT NULL,
-        description TEXT,
-        source_note_id INTEGER,
-        domain TEXT,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        metadata JSON,
         FOREIGN KEY (source_note_id) REFERENCES notes(id)
     )
     """)
     
-    # Questions table
-    cursor.execute("""
-    CREATE TABLE IF NOT EXISTS questions (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        question TEXT NOT NULL,
-        answer TEXT,
-        status TEXT DEFAULT 'open',
-        source_note_id INTEGER,
-        domain TEXT,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        answered_at TIMESTAMP,
-        metadata JSON,
-        FOREIGN KEY (source_note_id) REFERENCES notes(id)
-    )
-    """)
-    
-    # Blockers table
-    cursor.execute("""
-    CREATE TABLE IF NOT EXISTS blockers (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        description TEXT NOT NULL,
-        status TEXT DEFAULT 'active',
-        related_task_id INTEGER,
-        source_note_id INTEGER,
-        domain TEXT,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        resolved_at TIMESTAMP,
-        resolution TEXT,
-        metadata JSON,
-        FOREIGN KEY (related_task_id) REFERENCES tasks(id),
-        FOREIGN KEY (source_note_id) REFERENCES notes(id)
-    )
-    """)
-    
-    # Processing log
-    cursor.execute("""
-    CREATE TABLE IF NOT EXISTS processing_log (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        source_file TEXT NOT NULL,
-        status TEXT NOT NULL,
-        error_message TEXT,
-        clusters_generated INTEGER,
-        notes_created INTEGER,
-        tasks_extracted INTEGER,
-        processing_time_seconds REAL,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        metadata JSON
-    )
-    """)
-    
-    # User profile (basic for Phase 1)
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS user_profile (
         id INTEGER PRIMARY KEY,
@@ -146,10 +59,7 @@ def init_database(db_path: str = "data/smart_brain.db"):
     )
     """)
     
-    # Insert default profile if not exists
-    cursor.execute("""
-    INSERT OR IGNORE INTO user_profile (id) VALUES (1)
-    """)
+    cursor.execute("INSERT OR IGNORE INTO user_profile (id) VALUES (1)")
     
     conn.commit()
     conn.close()
@@ -159,3 +69,57 @@ def init_database(db_path: str = "data/smart_brain.db"):
 
 if __name__ == "__main__":
     init_database()
+
+
+def add_projects_table(db_path: str = "data/smart_brain.db"):
+    """Add projects table and update tasks."""
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+    
+    # Projects table
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS projects (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        domain TEXT NOT NULL,
+        description TEXT,
+        status TEXT DEFAULT 'active',
+        keywords TEXT,
+        confidence REAL DEFAULT 1.0,
+        source TEXT DEFAULT 'user',
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+    """)
+    
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_projects_domain ON projects(domain)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_projects_status ON projects(status)")
+    
+    # Add project_id to tasks if not exists
+    cursor.execute("PRAGMA table_info(tasks)")
+    columns = [col[1] for col in cursor.fetchall()]
+    if 'project_id' not in columns:
+        cursor.execute("ALTER TABLE tasks ADD COLUMN project_id INTEGER REFERENCES projects(id)")
+    
+    # Project assignment confidence tracking
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS project_assignments (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        task_id INTEGER,
+        project_id INTEGER,
+        confidence REAL,
+        confirmed BOOLEAN DEFAULT 0,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (task_id) REFERENCES tasks(id),
+        FOREIGN KEY (project_id) REFERENCES projects(id)
+    )
+    """)
+    
+    conn.commit()
+    conn.close()
+    logger.success("Projects table added")
+
+
+if __name__ == "__main__":
+    init_database()
+    add_projects_table()

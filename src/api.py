@@ -87,12 +87,13 @@ async def process_note(note: NoteCreate):
             keywords=[]
         )
         
-        # Route to domain - returns dict not object
+        # Route to domain - returns dict
         routed = route_service.route(cluster)
         
         # Find linked notes (search for [[wikilinks]] or similar notes)
         linked = _find_linked_notes(note.content)
         
+        # FIX: Use .get() since route_service returns dict, not object
         return NoteProcessed(
             suggested_domain=routed.get("domain", "personal"),
             suggested_title=title,
@@ -107,13 +108,31 @@ async def process_note(note: NoteCreate):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.post("/api/notes", response_model=NoteResponse)
+class TaskClarification(BaseModel):
+    task_index: int
+    action: str
+    original_text: str
+    question: str
+
+
+class NoteWithClarifications(BaseModel):
+    note_id: int
+    note: NoteResponse
+    clarifications_needed: List[TaskClarification]
+    pending_tasks: int
+
+
+class ClarificationAnswers(BaseModel):
+    note_id: int
+    answers: Dict[int, str]  # task_index -> answer
+
+
+@app.post("/api/notes", response_model=NoteWithClarifications)
 async def create_note(note: NoteSave):
-    """Save note to database and vault."""
+    """Save note and return any clarification questions for ambiguous tasks."""
     try:
         from src.models.workflow_state import RoutedNote, NoteType
         from src.services.task_extraction_service import task_extraction_service
-        from src.services.task_dedupe_service import task_dedupe_service
         
         routed = RoutedNote(
             title=note.title,
@@ -141,34 +160,43 @@ async def create_note(note: NoteSave):
             raise HTTPException(status_code=500, detail="Note saved but not found in DB")
         
         note_id = row[0]
+        conn.close()
         
-        # Extract tasks
-        tasks = task_extraction_service.extract_tasks(note.content, note_id, note.domain)
+        # Extract tasks - now returns (tasks, questions)
+        tasks, questions = task_extraction_service.extract_tasks(note.content, note_id, note.domain)
         
-        # Deduplicate tasks
-        unique_tasks = task_dedupe_service.deduplicate(tasks)
+        # Store tasks temporarily (with pending status if they need clarification)
+        conn = sqlite3.connect(settings.sqlite_db_path)
+        cursor = conn.cursor()
         
-        # Save tasks to database
-        for task in unique_tasks:
+        for task in tasks:
+            needs_clarification = task.metadata.get("is_ambiguous", False)
+            status = "pending_clarification" if needs_clarification else "open"
+            project_id = task.metadata.get("suggested_project_id")
+            
             cursor.execute("""
-                INSERT INTO tasks (text, action, status, priority, estimated_duration_minutes, domain, source_note_id)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO tasks (text, action, status, priority, estimated_duration_minutes, domain, source_note_id, project_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 task.text,
                 task.action,
-                task.status.value,
+                status,
                 task.priority.value,
                 task.estimated_duration_minutes,
                 task.domain,
-                task.source_note_id
+                task.source_note_id,
+                project_id
             ))
+            
+            # Learn keywords if assigned to project
+            if project_id:
+                from src.services.project_service import project_service
+                project_service.learn_keywords(project_id, f"{task.action} {task.text}")
         
         conn.commit()
         conn.close()
         
-        logger.info(f"Saved note with {len(unique_tasks)} unique tasks")
-        
-        return NoteResponse(
+        note_response = NoteResponse(
             id=row[0],
             title=row[1],
             content=row[2],
@@ -179,8 +207,71 @@ async def create_note(note: NoteSave):
             updated_at=row[7]
         )
         
+        clarifications = [
+            TaskClarification(
+                task_index=q["task_index"],
+                action=q["action"],
+                original_text=q.get("original_text", ""),
+                question=q["question"]
+            )
+            for q in questions
+        ]
+        
+        logger.info(f"Saved note with {len(tasks)} tasks, {len(clarifications)} need clarification")
+        
+        return NoteWithClarifications(
+            note_id=note_id,
+            note=note_response,
+            clarifications_needed=clarifications,
+            pending_tasks=len(tasks)
+        )
+        
     except Exception as e:
         logger.error(f"Save failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/notes/{note_id}/clarify")
+async def apply_clarifications(note_id: int, data: ClarificationAnswers):
+    """Apply clarification answers to pending tasks."""
+    try:
+        conn = sqlite3.connect(settings.sqlite_db_path)
+        cursor = conn.cursor()
+        
+        # Get pending tasks for this note, ordered by id (same order as extracted)
+        cursor.execute("""
+            SELECT id, text, action
+            FROM tasks
+            WHERE source_note_id = ? AND status = 'pending_clarification'
+            ORDER BY id ASC
+        """, (note_id,))
+        
+        pending_tasks = cursor.fetchall()
+        
+        for idx, (task_id, text, action) in enumerate(pending_tasks):
+            if idx in data.answers:
+                answer = data.answers[idx]
+                # Update task with clarification
+                new_text = f"{text}\n→ {answer}"
+                cursor.execute("""
+                    UPDATE tasks
+                    SET text = ?, status = 'open'
+                    WHERE id = ?
+                """, (new_text, task_id))
+            else:
+                # No answer provided, just mark as open
+                cursor.execute("""
+                    UPDATE tasks SET status = 'open' WHERE id = ?
+                """, (task_id,))
+        
+        conn.commit()
+        conn.close()
+        
+        logger.success(f"Applied {len(data.answers)} clarifications to note {note_id}")
+        return {"status": "ok", "clarifications_applied": len(data.answers)}
+        
+    except Exception as e:
+        logger.error(f"Clarification failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -261,10 +352,40 @@ async def get_note(note_id: int):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# FIX: Single /api/domains endpoint that returns proper dict format
 @app.get("/api/domains")
-async def list_domains():
-    """Get available PARA domains."""
-    return {"domains": settings.domains_list}
+async def get_domains():
+    """Get user's domains with full metadata."""
+    try:
+        from src.services.domain_service import domain_service
+        domains = domain_service.get_all_domains()
+        
+        # If no user domains exist yet, return defaults from settings
+        if not domains:
+            # Convert settings domains to proper format
+            default_colors = {
+                'work/marriott': 'blue',
+                'work/mansour': 'green', 
+                'work/konstellate': 'green',
+                'personal': 'purple',
+                'learning': 'amber',
+                'admin': 'gray'
+            }
+            domains = [
+                {
+                    'path': d,
+                    'name': d.split('/')[-1].title(),
+                    'color': default_colors.get(d, 'slate'),
+                    'target': 0,
+                    'keywords': []
+                }
+                for d in settings.domains_list
+            ]
+        
+        return {"domains": domains}
+    except Exception as e:
+        logger.error(f"Get domains failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 class TaskResponse(BaseModel):
@@ -331,18 +452,6 @@ async def get_daily_plan():
         return plan
     except Exception as e:
         logger.error(f"Daily plan failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.get("/api/domains")
-async def get_domains():
-    """Get user's domains."""
-    try:
-        from src.services.domain_service import domain_service
-        domains = domain_service.get_all_domains()
-        return {"domains": domains}
-    except Exception as e:
-        logger.error(f"Get domains failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -545,3 +654,237 @@ if __name__ == "__main__":
         reload=True,
         log_level="info"
     )
+
+
+@app.get("/api/stats/today")
+async def get_today_stats():
+    """Get today's gamification stats."""
+    from datetime import datetime, timedelta
+    
+    conn = sqlite3.connect(settings.sqlite_db_path)
+    cursor = conn.cursor()
+    
+    today = datetime.now().date().isoformat()
+    
+    # Completed today
+    cursor.execute("""
+        SELECT COUNT(*) FROM tasks 
+        WHERE status = 'completed' AND DATE(completed_at) = ?
+    """, (today,))
+    completed_today = cursor.fetchone()[0] or 0
+    
+    # Total for today (from daily plan - top 5)
+    cursor.execute("""
+        SELECT COUNT(*) FROM tasks WHERE status = 'open'
+    """)
+    total_open = cursor.fetchone()[0] or 0
+    total_today = min(5, total_open) + completed_today
+    
+    # Calculate XP (simplified)
+    cursor.execute("""
+        SELECT priority, estimated_duration_minutes FROM tasks 
+        WHERE status = 'completed' AND DATE(completed_at) = ?
+    """, (today,))
+    xp_today = 0
+    for row in cursor.fetchall():
+        priority, duration = row
+        base = {'high': 100, 'medium': 50, 'low': 20}.get(priority, 50)
+        duration_bonus = ((duration or 30) // 15) * 10
+        xp_today += base + duration_bonus
+    
+    # Calculate streak
+    streak = 0
+    check_date = datetime.now().date()
+    while True:
+        cursor.execute("""
+            SELECT COUNT(*) FROM tasks 
+            WHERE status = 'completed' AND DATE(completed_at) = ?
+        """, (check_date.isoformat(),))
+        count = cursor.fetchone()[0] or 0
+        if count > 0:
+            streak += 1
+            check_date -= timedelta(days=1)
+        else:
+            break
+    
+    conn.close()
+    
+    return {
+        "completed_today": completed_today,
+        "total_today": max(total_today, 1),
+        "xp_today": xp_today,
+        "streak": streak
+    }
+
+
+# === PROJECT ENDPOINTS ===
+
+class ProjectCreate(BaseModel):
+    name: str
+    domain: str
+    description: Optional[str] = ""
+    keywords: Optional[str] = ""
+
+
+class ProjectResponse(BaseModel):
+    id: int
+    name: str
+    domain: str
+    description: Optional[str]
+    status: str
+    keywords: List[str]
+    task_count: int
+
+
+@app.get("/api/projects", response_model=List[ProjectResponse])
+async def list_projects(domain: Optional[str] = None):
+    """List all projects, optionally filtered by domain."""
+    from src.services.project_service import project_service
+    projects = project_service.get_projects(domain)
+    return [
+        ProjectResponse(
+            id=p['id'],
+            name=p['name'],
+            domain=p['domain'],
+            description=p['description'],
+            status=p['status'],
+            keywords=p['keywords'],
+            task_count=p['task_count']
+        )
+        for p in projects
+    ]
+
+
+@app.post("/api/projects", response_model=ProjectResponse)
+async def create_project(project: ProjectCreate):
+    """Create a new project."""
+    from src.services.project_service import project_service
+    project_id = project_service.create_project(
+        project.name, project.domain, project.description, project.keywords
+    )
+    
+    return ProjectResponse(
+        id=project_id,
+        name=project.name,
+        domain=project.domain,
+        description=project.description,
+        status="active",
+        keywords=project.keywords.split(',') if project.keywords else [],
+        task_count=0
+    )
+
+
+@app.get("/api/projects/{project_id}/tasks")
+async def get_project_tasks(project_id: int):
+    """Get tasks for a specific project."""
+    conn = sqlite3.connect(settings.sqlite_db_path)
+    cursor = conn.cursor()
+    
+    cursor.execute("""
+        SELECT id, text, action, status, priority, estimated_duration_minutes, domain
+        FROM tasks
+        WHERE project_id = ? AND status = 'open'
+        ORDER BY priority DESC, created_at ASC
+    """, (project_id,))
+    
+    tasks = [
+        {
+            'id': row[0],
+            'text': row[1],
+            'action': row[2],
+            'status': row[3],
+            'priority': row[4],
+            'estimated_duration_minutes': row[5],
+            'domain': row[6]
+        }
+        for row in cursor.fetchall()
+    ]
+    
+    conn.close()
+    return {"tasks": tasks}
+
+
+@app.post("/api/tasks/{task_id}/assign-project")
+async def assign_task_to_project(task_id: int, data: Dict[str, int]):
+    """Assign a task to a project."""
+    from src.services.project_service import project_service
+    project_id = data.get("project_id")
+    
+    if not project_id:
+        raise HTTPException(status_code=400, detail="project_id required")
+    
+    project_service.assign_task_to_project(task_id, project_id)
+    return {"status": "ok"}
+
+
+@app.get("/api/projects/validate/{domain}")
+async def validate_project_assignments(domain: str):
+    """Check for misassigned tasks in a domain."""
+    from src.services.project_service import project_service
+    suggestions = project_service.validate_assignments(domain)
+    return {"suggestions": suggestions}
+
+
+@app.get("/api/hierarchy/{domain}")
+async def get_domain_hierarchy(domain: str):
+    """Get full hierarchy: domain -> projects -> tasks."""
+    from src.services.project_service import project_service
+    
+    conn = sqlite3.connect(settings.sqlite_db_path)
+    cursor = conn.cursor()
+    
+    projects = project_service.get_projects(domain)
+    
+    result = {
+        "domain": domain,
+        "projects": [],
+        "unassigned_tasks": []
+    }
+    
+    for project in projects:
+        cursor.execute("""
+            SELECT id, action, text, priority, estimated_duration_minutes, status
+            FROM tasks
+            WHERE project_id = ? AND status IN ('open', 'pending_clarification')
+            ORDER BY priority DESC, created_at ASC
+        """, (project['id'],))
+        
+        tasks = [
+            {
+                'id': row[0],
+                'action': row[1],
+                'text': row[2],
+                'priority': row[3],
+                'estimated_duration_minutes': row[4],
+                'status': row[5]
+            }
+            for row in cursor.fetchall()
+        ]
+        
+        result["projects"].append({
+            **project,
+            "tasks": tasks
+        })
+    
+    # Get unassigned tasks
+    cursor.execute("""
+        SELECT id, action, text, priority, estimated_duration_minutes, status
+        FROM tasks
+        WHERE domain = ? AND project_id IS NULL AND status IN ('open', 'pending_clarification')
+        ORDER BY created_at DESC
+    """, (domain,))
+    
+    result["unassigned_tasks"] = [
+        {
+            'id': row[0],
+            'action': row[1],
+            'text': row[2],
+            'priority': row[3],
+            'estimated_duration_minutes': row[4],
+            'status': row[5]
+        }
+        for row in cursor.fetchall()
+    ]
+    
+    conn.close()
+    return result
