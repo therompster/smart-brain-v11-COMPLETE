@@ -1,0 +1,352 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BillBrain - Bills & Actions</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        .tab-active { border-bottom: 3px solid #3b82f6; color: #3b82f6; }
+    </style>
+</head>
+<body class="bg-slate-900 text-white min-h-screen">
+    <div class="max-w-6xl mx-auto p-6">
+        <!-- Header -->
+        <header class="mb-8">
+            <div class="flex items-center justify-between">
+                <div>
+                    <h1 class="text-3xl font-bold">🧠 BillBrain</h1>
+                    <p class="text-slate-400">Bills & Action Items from Email</p>
+                </div>
+                <div class="flex gap-3">
+                    <button onclick="triggerIngest()" class="px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded-lg font-medium">
+                        📧 Scan Emails
+                    </button>
+                    <button onclick="syncToSecondBrain()" class="px-4 py-2 bg-green-600 hover:bg-green-700 rounded-lg font-medium">
+                        🔄 Sync to Second Brain
+                    </button>
+                </div>
+            </div>
+        </header>
+
+        <!-- Stats -->
+        <div id="stats" class="grid grid-cols-2 md:grid-cols-6 gap-4 mb-8">
+            <!-- Populated by JS -->
+        </div>
+
+        <!-- Tabs -->
+        <div class="flex gap-6 border-b border-slate-700 mb-6">
+            <button onclick="switchTab('bills')" id="tab-bills" class="pb-3 px-2 font-medium tab-active">
+                💵 Bills
+            </button>
+            <button onclick="switchTab('actions')" id="tab-actions" class="pb-3 px-2 font-medium text-slate-400 hover:text-white">
+                ✅ Actions
+            </button>
+        </div>
+
+        <!-- Bills Panel -->
+        <div id="panel-bills">
+            <div id="bills-list" class="space-y-4">
+                <div class="text-center py-8 text-slate-400">Loading bills...</div>
+            </div>
+        </div>
+
+        <!-- Actions Panel -->
+        <div id="panel-actions" class="hidden">
+            <div id="actions-list" class="space-y-4">
+                <div class="text-center py-8 text-slate-400">Loading actions...</div>
+            </div>
+        </div>
+
+        <!-- Toast -->
+        <div id="toast" class="fixed bottom-4 right-4 bg-green-600 text-white px-6 py-3 rounded-lg shadow-lg hidden">
+            Action completed
+        </div>
+    </div>
+
+    <script>
+        let currentTab = 'bills';
+
+        // Tab switching
+        function switchTab(tab) {
+            currentTab = tab;
+            document.getElementById('panel-bills').classList.toggle('hidden', tab !== 'bills');
+            document.getElementById('panel-actions').classList.toggle('hidden', tab !== 'actions');
+            document.getElementById('tab-bills').classList.toggle('tab-active', tab === 'bills');
+            document.getElementById('tab-actions').classList.toggle('tab-active', tab === 'actions');
+            document.getElementById('tab-bills').classList.toggle('text-slate-400', tab !== 'bills');
+            document.getElementById('tab-actions').classList.toggle('text-slate-400', tab !== 'actions');
+        }
+
+        // Show toast
+        function showToast(message) {
+            const toast = document.getElementById('toast');
+            toast.textContent = message;
+            toast.classList.remove('hidden');
+            setTimeout(() => toast.classList.add('hidden'), 3000);
+        }
+
+        // Load stats
+        async function loadStats() {
+            try {
+                const res = await fetch('/api/stats');
+                const data = await res.json();
+                document.getElementById('stats').innerHTML = `
+                    <div class="bg-amber-900/30 border border-amber-700/50 rounded-lg p-4 text-center">
+                        <div class="text-2xl font-bold text-amber-400">${data.bills.pending}</div>
+                        <div class="text-xs text-slate-400">Bills Pending</div>
+                    </div>
+                    <div class="bg-blue-900/30 border border-blue-700/50 rounded-lg p-4 text-center">
+                        <div class="text-2xl font-bold text-blue-400">${data.bills.ready}</div>
+                        <div class="text-xs text-slate-400">Bills Ready</div>
+                    </div>
+                    <div class="bg-green-900/30 border border-green-700/50 rounded-lg p-4 text-center">
+                        <div class="text-2xl font-bold text-green-400">${data.bills.paid}</div>
+                        <div class="text-xs text-slate-400">Bills Paid</div>
+                    </div>
+                    <div class="bg-purple-900/30 border border-purple-700/50 rounded-lg p-4 text-center">
+                        <div class="text-2xl font-bold text-purple-400">${data.actions.pending}</div>
+                        <div class="text-xs text-slate-400">Actions Pending</div>
+                    </div>
+                    <div class="bg-cyan-900/30 border border-cyan-700/50 rounded-lg p-4 text-center">
+                        <div class="text-2xl font-bold text-cyan-400">${data.actions.approved}</div>
+                        <div class="text-xs text-slate-400">Actions Approved</div>
+                    </div>
+                    <div class="bg-emerald-900/30 border border-emerald-700/50 rounded-lg p-4 text-center">
+                        <div class="text-2xl font-bold text-emerald-400">${data.actions.synced}</div>
+                        <div class="text-xs text-slate-400">Synced to Brain</div>
+                    </div>
+                `;
+            } catch (e) {
+                console.error('Failed to load stats:', e);
+            }
+        }
+
+        // Load bills
+        async function loadBills() {
+            try {
+                const res = await fetch('/api/bills');
+                const bills = await res.json();
+                
+                if (bills.length === 0) {
+                    document.getElementById('bills-list').innerHTML = `
+                        <div class="text-center py-12 text-slate-400">
+                            <div class="text-4xl mb-4">📭</div>
+                            <p>No bills detected yet</p>
+                            <p class="text-sm">Click "Scan Emails" to check for bills</p>
+                        </div>
+                    `;
+                    return;
+                }
+
+                document.getElementById('bills-list').innerHTML = bills.map(bill => `
+                    <div class="bg-slate-800/50 border border-slate-700 rounded-xl p-5">
+                        <div class="flex items-start justify-between">
+                            <div class="flex-1">
+                                <div class="flex items-center gap-3 mb-2">
+                                    <h3 class="text-xl font-semibold">${bill.vendor}</h3>
+                                    <span class="px-2 py-1 text-xs rounded ${getStatusColor(bill.status)}">${bill.status}</span>
+                                    ${bill.is_autopay ? '<span class="px-2 py-1 text-xs bg-green-900/50 text-green-400 rounded">AutoPay</span>' : ''}
+                                </div>
+                                <div class="flex gap-6 text-sm text-slate-400">
+                                    ${bill.amount_due ? `<span>💵 $${bill.amount_due.toFixed(2)}</span>` : ''}
+                                    ${bill.due_date ? `<span>📅 Due: ${new Date(bill.due_date).toLocaleDateString()}</span>` : ''}
+                                    <span class="${getUrgencyColor(bill.urgency)}">⚡ ${bill.urgency}</span>
+                                </div>
+                            </div>
+                            <div class="flex gap-2">
+                                ${bill.status === 'detected' || bill.status === 'needs_info' ? `
+                                    <button onclick="approveBill('${bill.id}')" class="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 rounded text-sm">Approve</button>
+                                    <button onclick="ignoreBill('${bill.id}')" class="px-3 py-1.5 bg-slate-600 hover:bg-slate-500 rounded text-sm">Ignore</button>
+                                ` : ''}
+                                ${bill.status === 'ready' ? `
+                                    <button onclick="markPaid('${bill.id}')" class="px-3 py-1.5 bg-green-600 hover:bg-green-700 rounded text-sm">Mark Paid</button>
+                                ` : ''}
+                            </div>
+                        </div>
+                    </div>
+                `).join('');
+            } catch (e) {
+                console.error('Failed to load bills:', e);
+                document.getElementById('bills-list').innerHTML = `
+                    <div class="text-center py-8 text-red-400">Failed to load bills</div>
+                `;
+            }
+        }
+
+        // Load actions
+        async function loadActions() {
+            try {
+                const res = await fetch('/api/actions');
+                const actions = await res.json();
+                
+                if (actions.length === 0) {
+                    document.getElementById('actions-list').innerHTML = `
+                        <div class="text-center py-12 text-slate-400">
+                            <div class="text-4xl mb-4">✨</div>
+                            <p>No action items detected yet</p>
+                            <p class="text-sm">Click "Scan Emails" to check for actionable emails</p>
+                        </div>
+                    `;
+                    return;
+                }
+
+                document.getElementById('actions-list').innerHTML = actions.map(action => `
+                    <div class="bg-slate-800/50 border border-slate-700 rounded-xl p-5">
+                        <div class="flex items-start justify-between">
+                            <div class="flex-1">
+                                <div class="flex items-center gap-3 mb-2">
+                                    <h3 class="text-lg font-semibold">${action.action_required}</h3>
+                                    <span class="px-2 py-1 text-xs rounded ${getStatusColor(action.status)}">${action.status}</span>
+                                    <span class="px-2 py-1 text-xs rounded ${getPriorityColor(action.priority)}">${action.priority}</span>
+                                </div>
+                                ${action.sender_name ? `<p class="text-sm text-slate-400 mb-1">From: ${action.sender_name}</p>` : ''}
+                                ${action.subject ? `<p class="text-sm text-slate-500 mb-2 truncate">"${action.subject}"</p>` : ''}
+                                <div class="flex gap-6 text-sm text-slate-400">
+                                    <span>📁 ${action.domain}</span>
+                                    ${action.estimated_minutes ? `<span>⏱️ ~${action.estimated_minutes}m</span>` : ''}
+                                    ${action.deadline ? `<span>📅 ${new Date(action.deadline).toLocaleDateString()}</span>` : ''}
+                                </div>
+                                ${action.first_step ? `
+                                    <div class="mt-3 p-3 bg-slate-900/50 rounded-lg">
+                                        <span class="text-xs text-blue-400">First step:</span>
+                                        <p class="text-sm">${action.first_step}</p>
+                                    </div>
+                                ` : ''}
+                            </div>
+                            <div class="flex gap-2">
+                                ${action.status === 'pending' ? `
+                                    <button onclick="approveAction('${action.id}')" class="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 rounded text-sm">Approve</button>
+                                    <button onclick="ignoreAction('${action.id}')" class="px-3 py-1.5 bg-slate-600 hover:bg-slate-500 rounded text-sm">Ignore</button>
+                                ` : ''}
+                                ${action.status === 'synced' ? `
+                                    <button onclick="completeAction('${action.id}')" class="px-3 py-1.5 bg-green-600 hover:bg-green-700 rounded text-sm">Complete</button>
+                                ` : ''}
+                            </div>
+                        </div>
+                    </div>
+                `).join('');
+            } catch (e) {
+                console.error('Failed to load actions:', e);
+                document.getElementById('actions-list').innerHTML = `
+                    <div class="text-center py-8 text-red-400">Failed to load actions</div>
+                `;
+            }
+        }
+
+        // Helper functions
+        function getStatusColor(status) {
+            const colors = {
+                'detected': 'bg-amber-900/50 text-amber-400',
+                'needs_info': 'bg-orange-900/50 text-orange-400',
+                'ready': 'bg-blue-900/50 text-blue-400',
+                'paid': 'bg-green-900/50 text-green-400',
+                'archived': 'bg-slate-700 text-slate-400',
+                'pending': 'bg-amber-900/50 text-amber-400',
+                'approved': 'bg-blue-900/50 text-blue-400',
+                'synced': 'bg-cyan-900/50 text-cyan-400',
+                'completed': 'bg-green-900/50 text-green-400',
+                'ignored': 'bg-slate-700 text-slate-400'
+            };
+            return colors[status] || 'bg-slate-700 text-slate-400';
+        }
+
+        function getPriorityColor(priority) {
+            const colors = {
+                'high': 'bg-red-900/50 text-red-400',
+                'medium': 'bg-amber-900/50 text-amber-400',
+                'low': 'bg-slate-700 text-slate-400'
+            };
+            return colors[priority] || 'bg-slate-700 text-slate-400';
+        }
+
+        function getUrgencyColor(urgency) {
+            const colors = {
+                'overdue': 'text-red-400',
+                'urgent': 'text-orange-400',
+                'soon': 'text-amber-400',
+                'normal': 'text-slate-400'
+            };
+            return colors[urgency] || 'text-slate-400';
+        }
+
+        // Bill actions
+        async function approveBill(id) {
+            await fetch(`/api/bills/${id}/approve`, { method: 'POST' });
+            showToast('Bill approved');
+            loadBills();
+            loadStats();
+        }
+
+        async function ignoreBill(id) {
+            await fetch(`/api/bills/${id}/ignore`, { method: 'POST' });
+            showToast('Bill ignored');
+            loadBills();
+            loadStats();
+        }
+
+        async function markPaid(id) {
+            await fetch(`/api/bills/${id}/paid`, { method: 'POST' });
+            showToast('Bill marked as paid');
+            loadBills();
+            loadStats();
+        }
+
+        // Action actions
+        async function approveAction(id) {
+            await fetch(`/api/actions/${id}/approve`, { method: 'POST' });
+            showToast('Action approved - ready to sync');
+            loadActions();
+            loadStats();
+        }
+
+        async function ignoreAction(id) {
+            await fetch(`/api/actions/${id}/ignore`, { method: 'POST' });
+            showToast('Action ignored');
+            loadActions();
+            loadStats();
+        }
+
+        async function completeAction(id) {
+            await fetch(`/api/actions/${id}/complete`, { method: 'POST' });
+            showToast('Action completed');
+            loadActions();
+            loadStats();
+        }
+
+        // Trigger ingestion
+        async function triggerIngest() {
+            showToast('Scanning emails...');
+            try {
+                const res = await fetch('/api/ingest', { method: 'POST' });
+                const data = await res.json();
+                showToast(`Found ${data.bills} bills, ${data.actions} actions`);
+                loadBills();
+                loadActions();
+                loadStats();
+            } catch (e) {
+                showToast('Ingestion failed');
+            }
+        }
+
+        // Sync to Second Brain
+        async function syncToSecondBrain() {
+            showToast('Syncing to Second Brain...');
+            try {
+                const res = await fetch('/api/actions/sync', { method: 'POST' });
+                const data = await res.json();
+                showToast(`Synced ${data.synced} actions to Second Brain`);
+                loadActions();
+                loadStats();
+            } catch (e) {
+                showToast('Sync failed');
+            }
+        }
+
+        // Initialize
+        loadStats();
+        loadBills();
+        loadActions();
+    </script>
+</body>
+</html>
